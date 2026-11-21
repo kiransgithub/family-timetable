@@ -1,0 +1,4 @@
+node_modules/
+feed.ics
+*.local.json
+.DS_Store

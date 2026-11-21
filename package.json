@@ -1,0 +1,16 @@
+{
+  "name": "family-timetable",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Family timetable PWA for GitHub Pages: kids' schedules, school calendars, commute-aware leave-by alerts and an Apple Calendar feed.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "serve": "python3 -m http.server 8080",
+    "validate": "node tools/validate-db.mjs",
+    "ics": "node tools/publish-feed.mjs --out feed.ics"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
