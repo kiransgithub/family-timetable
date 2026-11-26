@@ -10,6 +10,9 @@ Linux.
 - **Week / Month:** everything at a glance, with school days off, early releases, holidays and
   birthdays marked.
 - **Kids:** ages, birthday countdowns, weekly routine and upcoming days off per child.
+- **Rewards:** each child's balance (100 points = $1), what it was earned for, every deduction
+  with its reason, when and by whom. Everyone can look; only the parents, with a password, can
+  add, deduct or void.
 - **Per-date changes:** mark a makeup class (longer session), cancel one date, move a time,
   confirm a class is on during a holiday, set an early-release pickup time.
 - **Alerts:** popups, a chime and notifications while the app is open, plus a private
@@ -57,6 +60,41 @@ family-timetable/          ◄──   (every edit = a commit)    ──►   (C
 8. **More devices:** Manage → Data & sync → *Copy setup code*, send it to yourself, and paste it
    into the installed app on the other device (home-screen apps on iOS have their own storage,
    so paste it inside the installed app, not in Safari).
+
+## Rewards
+
+The Rewards tab shows each child's balance, a breakdown by activity and by deduction reason,
+month-by-month totals, who gave what, and the full history (date, time, category, note, given
+by, balance after). *Export CSV* downloads the history for a spreadsheet.
+
+- **Parents only:** adding a reward, deducting, voiding an entry, editing categories and
+  changing passwords all ask for a parent password. Each parent has their own, so every entry
+  records who gave it. An unlock lasts 5 minutes (restarted by each change) and ends as soon as
+  the app goes to the background or reloads. After 5 wrong tries the app makes you wait.
+- **First time:** the first parent to open Rewards on a device with write access sets their
+  password, then sets the other parent's under *Passwords* (the other parent can change it after
+  unlocking). A forgotten password is reset by the other parent. If both are forgotten, set both
+  `password` values to `null` in `rewards.json` on GitHub and set them again in the app.
+- **Deductions** need a reason and can't take a balance below $0. Nothing is ever deleted: a
+  mistake is *voided* (with a reason), stays in the history crossed out and stops counting.
+- **Where it lives:** `rewards.json` next to `db.json` in the private data repo, kept separate so
+  timetable edits and imports can never touch balances. Only salted PBKDF2-SHA256 hashes of the
+  passwords are stored. Every change is a commit naming the parent and the device.
+- This is a family-level lock: it keeps the kids (and any view-only device) from changing
+  balances in the app. Someone with a write token and developer tools could still edit the file
+  directly, and the commit history would show it.
+
+### `rewards.json` reference
+
+| Field | What it is |
+|---|---|
+| `pointsPerDollar` | `100` |
+| `unlockMinutes` | How long an unlock lasts (1–60, default 5) |
+| `parents[]` | `id`, `name`, `password` (`null` or `{ alg, iterations, salt, hash, setAt, setBy }`) |
+| `kids[]` | Member ids from `db.json` |
+| `categories[]` | `id`, `label`, `emoji`, `group`, `type` (`earn` / `deduct` / `both`; `system` for the opening balance), `hidden`, `schedule` (the weekly activity it came from) |
+| `entries[]` | `id`, `kid`, `points` (whole points; negative = deduction), `category`, `note` (required for deductions), `at` (ISO time), `by` (parent id), `void: { at, by, reason }` |
+| `log[]` | Password changes: `at`, `by`, `action`, `target` |
 
 ## How leave-by times are worked out
 
@@ -108,8 +146,9 @@ Example: one makeup class on a Saturday:
 
 ```bash
 python3 -m http.server 8080   # then open http://localhost:8080
-npm test                      # unit tests for the scheduling, commute and calendar-feed code
+npm test                      # unit tests: scheduling, commute, calendar feed, rewards, passwords
 node tools/validate-db.mjs ../family-timetable-data/db.json
+node tools/validate-rewards.mjs ../family-timetable-data/rewards.json ../family-timetable-data/db.json
 node tools/publish-feed.mjs ../family-timetable-data/db.json --out feed.ics
 python3 tools/make-icons.py   # redraw the icons (needs Pillow)
 ```

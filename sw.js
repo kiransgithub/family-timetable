@@ -3,7 +3,7 @@
 // away) with the cache as the offline fallback. GitHub API and map calls
 // are never cached.
 
-const VERSION = 'ftm-v1.0.0';
+const VERSION = 'ftm-v1.1.0';
 const SHELL = [
   './',
   'index.html',
@@ -18,12 +18,17 @@ const SHELL = [
   'js/core/alerts.js',
   'js/core/ics.js',
   'js/core/validate.js',
+  'js/core/rewards.js',
+  'js/core/password.js',
   'js/services/github.js',
   'js/services/geo.js',
   'js/services/notify.js',
+  'js/services/lock.js',
   'js/ui/dom.js',
   'js/ui/views.js',
   'js/ui/manage.js',
+  'js/ui/rewards.js',
+  'js/ui/charts.js',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/apple-touch-icon.png',

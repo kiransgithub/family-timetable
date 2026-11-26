@@ -6,6 +6,7 @@ import { forMember } from '../core/expand.js';
 import { describeSource, hasCoords } from '../core/commute.js';
 import { HOME_ID, kidsOf, placeLabel } from '../core/model.js';
 import { directionsUrl } from '../services/geo.js';
+import { kidBalanceLink } from './rewards.js';
 
 // ---- small pieces -----------------------------------------------------------
 
@@ -332,6 +333,7 @@ export function renderKids(ctx) {
             age ? h('p', { class: 'kid-sub' }, `${age.years} years${age.months ? `, ${age.months} month${age.months === 1 ? '' : 's'}` : ''}${k.school?.grade ? ` · ${k.school.grade}` : ''}`) : null,
             bd ? h('p', { class: 'kid-sub' }, bd.inDays === 0 ? `🎂 ${bd.turns} today!` : `🎂 Turns ${bd.turns} on ${fmtDate(bd.date, { weekday: 'short', month: 'short', day: 'numeric' })} (${bd.inDays} day${bd.inDays === 1 ? '' : 's'})`) : null)),
         school ? h('p', { class: 'kid-school' }, icon('pin'), school.name) : null,
+        kidBalanceLink(ctx, k.id),
         k.notes ? h('p', { class: 'kid-notes' }, k.notes) : null,
         h('h3', null, 'Every week'),
         routine.length ? h('ul', { class: 'routine' }, routine.map((s) => {

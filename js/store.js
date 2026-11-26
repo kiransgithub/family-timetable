@@ -5,6 +5,7 @@
 import { normalizeDb } from './core/model.js';
 import { validateDb } from './core/validate.js';
 import { buildIcs } from './core/ics.js';
+import { normalizeRewards, validateRewards } from './core/rewards.js';
 import * as gh from './services/github.js';
 
 const K = {
@@ -15,6 +16,9 @@ const K = {
   lastSync: 'ftm.lastSync',
   device: 'ftm.device',
   feedAt: 'ftm.feedPublishedAt',
+  rewards: 'ftm.rewards',
+  rewardsSha: 'ftm.rewards.sha',
+  rewardsRepo: 'ftm.rewards.repo',
 };
 
 const ls = {
@@ -305,5 +309,177 @@ export class Store extends EventTarget {
     } catch {
       return null;
     }
+  }
+}
+
+// ---- rewards.json ------------------------------------------------------------------
+// The rewards ledger is its own file next to db.json in the same private repo,
+// so timetable edits (raw JSON, imports) can never touch balances. Changes go
+// through the password-gated Rewards tab only.
+
+export function rewardsPath(dbPath = 'db.json') {
+  return dbPath.includes('/') ? dbPath.replace(/[^/]*$/, 'rewards.json') : 'rewards.json';
+}
+
+export class RewardsStore extends EventTarget {
+  constructor(store) {
+    super();
+    this.store = store;
+    this.data = null;
+    this.sha = ls.get(K.rewardsSha, null);
+    this.status = 'idle'; // idle | loading | synced | saving | offline | error | missing
+    this.error = null;
+    this.queue = Promise.resolve();
+    const cached = ls.get(K.rewards, null);
+    if (cached && ls.get(K.rewardsRepo, null) === this.repoKey) this.data = normalizeRewards(cached);
+  }
+
+  get repoKey() {
+    const c = this.store.config;
+    if (this.store.mode === 'local') return 'local';
+    return c ? `${c.owner}/${c.repo}/${rewardsPath(c.path)}` : null;
+  }
+
+  get cfg() {
+    const c = this.store.config;
+    return c ? { ...c, path: rewardsPath(c.path) } : null;
+  }
+
+  emit() {
+    this.dispatchEvent(new Event('change'));
+  }
+
+  setStatus(status, error = null) {
+    this.status = status;
+    this.error = error;
+    this.emit();
+  }
+
+  cache() {
+    ls.set(K.rewards, this.data);
+    ls.set(K.rewardsSha, this.sha);
+    ls.set(K.rewardsRepo, this.data ? this.repoKey : null);
+  }
+
+  async refresh({ quiet = false } = {}) {
+    const mode = this.store.mode;
+    if (ls.get(K.rewardsRepo, null) && ls.get(K.rewardsRepo, null) !== this.repoKey) {
+      this.data = null;
+      this.sha = null;
+      this.cache();
+    }
+    if (mode === 'local') {
+      this.setStatus(this.data ? 'synced' : 'missing');
+      return;
+    }
+    if (mode !== 'github' || !this.store.config) {
+      this.data = null;
+      this.setStatus('idle');
+      return;
+    }
+    if (!quiet || !this.data) this.setStatus('loading');
+    try {
+      const { text, sha } = await gh.readFile(this.cfg);
+      if (sha !== this.sha || !this.data) {
+        this.data = normalizeRewards(JSON.parse(text));
+        this.sha = sha;
+        this.cache();
+      }
+      this.setStatus('synced');
+    } catch (e) {
+      if (e.status === 404) {
+        this.data = null;
+        this.sha = null;
+        this.cache();
+        this.setStatus('missing');
+      } else if (e instanceof SyntaxError) this.setStatus('error', `rewards.json is not valid JSON: ${e.message}`);
+      else if (e.status === 0) this.setStatus('offline', e.message);
+      else this.setStatus('error', e.message);
+    }
+  }
+
+  // Same pattern as the timetable: edit a copy, validate, save with the
+  // file's sha, and on a conflict re-apply `fn` to the newest version.
+  // `fn` may throw (e.g. "not enough balance") after seeing the newest data.
+  mutate(fn, message = 'Update rewards') {
+    const run = this.queue.catch(() => {}).then(() => this.mutateNow(fn, message));
+    this.queue = run;
+    return run;
+  }
+
+  async mutateNow(fn, message) {
+    if (!this.data) throw new Error('Rewards are not loaded yet.');
+    if (!this.store.canWrite) throw new Error('This device is view-only.');
+    try {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        let draft = normalizeRewards(structuredClone(this.data));
+        const result = fn(draft);
+        if (result === false) return false;
+        if (result && typeof result === 'object') draft = normalizeRewards(structuredClone(result));
+        draft.updatedAt = new Date().toISOString();
+        draft.updatedBy = this.store.deviceName;
+        const { errors } = validateRewards(draft, { members: this.store.db?.members });
+        if (errors.length) throw new ValidationError(errors);
+        if (this.store.mode === 'local') {
+          this.data = draft;
+          this.cache();
+          this.setStatus('synced');
+          return true;
+        }
+        this.setStatus('saving');
+        try {
+          this.sha = await gh.writeFile(this.cfg, `${JSON.stringify(draft, null, 2)}\n`, this.sha, `${message} (${this.store.deviceName})`);
+          this.data = draft;
+          this.cache();
+          this.setStatus('synced');
+          return true;
+        } catch (e) {
+          if (!e.isConflict || attempt >= 2) throw e;
+          // Someone else saved first: load their version and re-apply.
+          const { text, sha } = await gh.readFile(this.cfg);
+          this.data = normalizeRewards(JSON.parse(text));
+          this.sha = sha;
+          this.cache();
+        }
+      }
+      return false;
+    } catch (e) {
+      if (e.status === 0) this.setStatus('offline', e.message);
+      else if (e.status) this.setStatus('error', e.message);
+      else if (this.status === 'saving') this.setStatus('synced'); // a rule in fn or validation said no after a conflict reload; nothing was written
+      throw e;
+    }
+  }
+
+  // First-time setup: write a fresh rewards.json. Never overwrites one that
+  // already exists (another device may have just created it): that one is
+  // loaded instead.
+  async create(data, message = 'Set up rewards') {
+    const draft = normalizeRewards(structuredClone(data));
+    const { errors } = validateRewards(draft, { members: this.store.db?.members });
+    if (errors.length) throw new ValidationError(errors);
+    if (this.store.mode === 'local') {
+      if (this.data) return false;
+      this.data = draft;
+      this.cache();
+      this.setStatus('synced');
+      return true;
+    }
+    if (!this.store.canWrite) throw new Error('This device is view-only.');
+    try {
+      const { text, sha } = await gh.readFile(this.cfg);
+      this.data = normalizeRewards(JSON.parse(text));
+      this.sha = sha;
+      this.cache();
+      this.setStatus('synced');
+      return false;
+    } catch (e) {
+      if (e.status !== 404) throw e;
+    }
+    this.sha = await gh.writeFile(this.cfg, `${JSON.stringify(draft, null, 2)}\n`, null, `${message} (${this.store.deviceName})`);
+    this.data = draft;
+    this.cache();
+    this.setStatus('synced');
+    return true;
   }
 }

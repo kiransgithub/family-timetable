@@ -70,6 +70,11 @@ const contentsUrl = (cfg) => `/repos/${seg(cfg.owner)}/${seg(cfg.repo)}/contents
 export async function readFile(cfg) {
   const j = await call(cfg.token, 'GET', `${contentsUrl(cfg)}?ref=${seg(cfg.branch)}`);
   if (Array.isArray(j) || j.type !== 'file') throw new GitHubError(400, `${cfg.path} is not a file.`, j);
+  // Files over 1 MB come back without content; fetch the blob instead.
+  if (j.encoding === 'none' || (!j.content && j.size > 0)) {
+    const blob = await call(cfg.token, 'GET', `/repos/${seg(cfg.owner)}/${seg(cfg.repo)}/git/blobs/${seg(j.sha)}`);
+    return { text: b64decodeUtf8(blob.content), sha: j.sha };
+  }
   return { text: b64decodeUtf8(j.content), sha: j.sha };
 }
 

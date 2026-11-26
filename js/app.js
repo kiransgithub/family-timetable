@@ -1,10 +1,12 @@
 // App shell: routing, header and tabs, sync loop, alert popups and the
 // service worker.
 
-import { Store } from './store.js';
+import { Store, RewardsStore } from './store.js';
 import { h, append, clear, icon, toast, openModal, closeTopModal } from './ui/dom.js';
 import { renderToday, renderWeek, renderMonth, renderKids } from './ui/views.js';
 import { renderManage, renderWelcome, openOccMenu, editEvent, locateAndRoute } from './ui/manage.js';
+import { renderRewards } from './ui/rewards.js';
+import { onLockChange } from './services/lock.js';
 import { expand, dayMarkers } from './core/expand.js';
 import { planTrips, wantedRoutes, hasCoords } from './core/commute.js';
 import { kidsOf, makeIndex } from './core/model.js';
@@ -13,6 +15,7 @@ import { directionsUrl } from './services/geo.js';
 import { AlertScheduler, chime, showSystemNotification, unlockAudio } from './services/notify.js';
 
 const store = new Store();
+const rewards = new RewardsStore(store);
 const state = {
   filter: localStorage.getItem('ftm.filter') || 'all',
 };
@@ -50,6 +53,7 @@ const tz = () => store.db?.meta?.timezone || 'America/Phoenix';
 
 const ctx = {
   store,
+  rewards,
   get db() { return store.db; },
   get filter() { return state.filter; },
   now,
@@ -85,6 +89,7 @@ const TABS = [
   ['week', 'Week', 'week'],
   ['month', 'Month', 'month'],
   ['kids', 'Kids', 'kids'],
+  ['rewards', 'Rewards', 'rewards'],
   ['manage', 'Manage', 'manage'],
 ];
 
@@ -118,7 +123,7 @@ function renderChrome(route, ready) {
     h('div', { class: 'topbar' },
       h('a', { class: 'brand', href: '#/today' }, h('img', { src: 'icons/icon-192.png', alt: '', width: '28', height: '28' }), h('span', null, store.db?.meta?.title || 'Family Timetable')),
       store.mode !== 'none' ? syncPill() : null),
-    ready && kids.length > 1 && route.name !== 'manage'
+    ready && kids.length > 1 && route.name !== 'manage' && route.name !== 'rewards'
       ? h('div', { class: 'filters', role: 'tablist', 'aria-label': 'Show' },
         [{ id: 'all', name: 'Everyone', color: null }, ...kids].map((k) => h('button', {
           class: `fchip ${state.filter === k.id ? 'fchip-on' : ''}`,
@@ -137,7 +142,9 @@ function renderChrome(route, ready) {
   tabs.hidden = !ready;
   if (ready) {
     for (const [id, label, ic] of TABS) {
-      tabs.append(h('a', { href: `#/${id}`, class: `tab ${route.name === id ? 'tab-on' : ''}`, 'aria-current': route.name === id ? 'page' : null }, icon(ic), h('span', null, label)));
+      // Rewards opens straight to the child picked in the filter, if any.
+      const href = id === 'rewards' && state.filter !== 'all' && kids.some((k) => k.id === state.filter) ? `#/rewards/${state.filter}` : `#/${id}`;
+      tabs.append(h('a', { href, class: `tab ${route.name === id ? 'tab-on' : ''}`, 'aria-current': route.name === id ? 'page' : null }, icon(ic), h('span', null, label)));
     }
   }
 }
@@ -158,6 +165,7 @@ function render() {
     else if (route.name === 'week') node = renderWeek(ctx, isDate(route.a) ? route.a : ctx.today());
     else if (route.name === 'month') node = renderMonth(ctx, /^\d{4}-\d{2}$/.test(route.a || '') ? route.a : ctx.today().slice(0, 7));
     else if (route.name === 'kids') node = renderKids(ctx);
+    else if (route.name === 'rewards') node = renderRewards(ctx, route.a);
     else if (route.name === 'manage') node = renderManage(ctx, route.a);
     else node = renderToday(ctx, isDate(route.a) ? route.a : ctx.today(), route.b);
   } catch (e) {
@@ -243,9 +251,18 @@ let lastRefresh = 0;
 async function sync({ quiet = true } = {}) {
   if (store.mode !== 'github') return;
   lastRefresh = Date.now();
-  await store.refresh({ quiet });
+  await Promise.all([store.refresh({ quiet }), rewards.refresh({ quiet: quiet && !!rewards.data })]);
   maybeAutoLocate();
   maybeRepublishFeed();
+}
+
+// Load rewards.json whenever the device is connected to a different repo
+// (first setup, setup code, or switching to local mode).
+let rewardsRepo = rewards.repoKey;
+function watchRewardsRepo() {
+  if (rewards.repoKey === rewardsRepo) return;
+  rewardsRepo = rewards.repoKey;
+  rewards.refresh();
 }
 
 // ---- service worker ------------------------------------------------------------------
@@ -311,13 +328,19 @@ function keyboard(e) {
 
 async function start() {
   store.addEventListener('change', renderSoon);
+  store.addEventListener('change', watchRewardsRepo);
+  rewards.addEventListener('change', renderSoon);
+  onLockChange(renderSoon);
   window.addEventListener('hashchange', render);
   document.addEventListener('keydown', keyboard);
   ['pointerdown', 'keydown'].forEach((ev) => document.addEventListener(ev, unlockAudio, { once: true, capture: true }));
   render();
   await applySetupFromHash();
   if (store.mode === 'github') await sync({ quiet: !!store.db });
-  else if (store.mode === 'local') store.refresh();
+  else if (store.mode === 'local') {
+    store.refresh();
+    rewards.refresh();
+  }
   render();
   scheduler.start();
   registerServiceWorker();
@@ -331,6 +354,17 @@ async function start() {
     if (document.visibilityState === 'visible' && Date.now() - lastRefresh > 60000) sync();
   });
   window.addEventListener('online', () => sync());
+  // Rewards charts are drawn to fit the screen; redraw after a resize or rotation.
+  let resizeTimer = null;
+  let lastWidth = window.innerWidth;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (Math.abs(window.innerWidth - lastWidth) < 40 || parseRoute().name !== 'rewards') return;
+      lastWidth = window.innerWidth;
+      renderSoon();
+    }, 250);
+  });
 }
 
 start();
